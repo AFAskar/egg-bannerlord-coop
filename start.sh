@@ -286,6 +286,40 @@ game_installed_at() {
 
 game_installed() { game_installed_at "$GAME_DIR"; }
 
+# Pelican renders one console line per event and Wings only splits on newlines,
+# so a curl/7z carriage-return progress bar would be buffered until it ends.
+# Poll the growing file instead and log newline-terminated updates.
+progress_bytes() {
+  pid=$1; path=$2; total=$3; label=$4; last=-1
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 10
+    kill -0 "$pid" 2>/dev/null || break
+    [ -f "$path" ] || continue
+    size=$(wc -c < "$path" 2>/dev/null | awk '{print $1}')
+    [ -n "$size" ] || continue
+    [ "$size" = "$last" ] && continue
+    last=$size
+    if [ "$total" -gt 0 ]; then
+      log "$label: $((size / 1048576)) / $((total / 1048576)) MB ($((size * 100 / total))%)"
+    else
+      log "$label: $((size / 1048576)) MB"
+    fi
+  done
+}
+
+progress_du() {
+  pid=$1; path=$2; label=$3; last=-1
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 10
+    kill -0 "$pid" 2>/dev/null || break
+    size=$(du -sk "$path" 2>/dev/null | awk '{print $1}')
+    [ -n "$size" ] || continue
+    [ "$size" = "$last" ] && continue
+    last=$size
+    log "$label: $((size / 1024)) MB"
+  done
+}
+
 update_game() {
   if [ "$AUTO_UPDATE" != 1 ]; then
     log "AUTO_UPDATE=0 - not checking GitHub"
@@ -324,6 +358,8 @@ update_game() {
     { warn "release manifest has no windows.name"; return 1; }
   win_name=$(basename "$win_name")
   [ -n "$win_name" ] || { warn "release manifest names an empty archive"; return 1; }
+  win_bytes=$(jq -er '.windows.bytes' "$manifest" 2>/dev/null) || win_bytes=0
+  case $win_bytes in *[!0-9]*|"") win_bytes=0 ;; esac
 
   current=$(cat "$GAME_DIR/.coop-release" 2>/dev/null || true)
   if game_installed && [ "$current" = "$win_sha" ]; then
@@ -337,13 +373,26 @@ update_game() {
     log "using verified download $archive"
   else
     rm -f "$archive"
-    log "downloading $win_name (~4.2 GB) from the GitHub release"
-    # --progress-bar writes to stderr and keeps stdout for the panel log.
-    if ! curl -fL --progress-bar --retry 3 --retry-delay 5 --connect-timeout 20 \
-         -o "$archive" "$win_url"; then
+    if [ "$win_bytes" -gt 0 ]; then
+      log "downloading $win_name (~$((win_bytes / 1048576)) MB) from the GitHub release"
+    else
+      log "downloading $win_name from the GitHub release"
+    fi
+    curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 \
+         -o "$archive" "$win_url" &
+    dl_pid=$!
+    progress_bytes "$dl_pid" "$archive" "$win_bytes" "download" &
+    progress_pid=$!
+    if ! wait "$dl_pid"; then
+      kill "$progress_pid" 2>/dev/null || true
+      wait "$progress_pid" 2>/dev/null || true
+      rm -f "$archive"
       warn "could not download $win_name"
       return 1
     fi
+    kill "$progress_pid" 2>/dev/null || true
+    wait "$progress_pid" 2>/dev/null || true
+    log "download complete"
   fi
 
   actual=$(sha256sum "$archive" | awk '{print $1}') ||
@@ -359,12 +408,21 @@ update_game() {
   mkdir -p "$staging" 2>/dev/null
   [ -d "$staging" ] || { warn "cannot create $staging"; return 1; }
   log "extracting $win_name"
-  # Keep the file list quiet, but send extraction progress to stderr.
-  if ! 7z x -y -bso0 -bsp2 -o"$staging" "$archive"; then
+  # Keep the file list quiet; progress_du reports the growing staging folder.
+  7z x -y -bso0 -bsp0 -o"$staging" "$archive" &
+  ex_pid=$!
+  progress_du "$ex_pid" "$staging" "extracting" &
+  progress_pid=$!
+  if ! wait "$ex_pid"; then
+    kill "$progress_pid" 2>/dev/null || true
+    wait "$progress_pid" 2>/dev/null || true
     warn "could not extract $win_name"
     rm -rf "$staging"
     return 1
   fi
+  kill "$progress_pid" 2>/dev/null || true
+  wait "$progress_pid" 2>/dev/null || true
+  log "extraction complete"
   rm -f "$archive"
   if ! game_installed_at "$staging"; then
     warn "release archive did not contain BannerlordCoopServer.exe and engine/"
