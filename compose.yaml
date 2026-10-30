@@ -1,6 +1,6 @@
 services:
   coop:
-    image: ghcr.io/geofmigliacci/bannerlord-coop:latest
+    image: ghcr.io/afaskar/bannerlord-coop:latest
     build: .  # `up --build` uses your working tree instead of the published image
     environment:
       # The panel sends this, compose has to.

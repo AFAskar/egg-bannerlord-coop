@@ -23,7 +23,7 @@ downloads for anonymous and non-owning accounts, so `WORKSHOP_MODS` requires a
 | [`start.sh`](start.sh) | Boot script: release download, modules, Wine prefix, server config, launch. |
 | [`compose.yaml`](compose.yaml) | Runs the same image with no panel. |
 
-Published image `ghcr.io/geofmigliacci/bannerlord-coop:latest`, also tagged per
+Published image `ghcr.io/afaskar/bannerlord-coop:latest`, also tagged per
 commit sha. amd64 only.
 
 ## Requirements
