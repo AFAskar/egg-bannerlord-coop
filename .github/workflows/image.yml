@@ -8,6 +8,11 @@ on:
     paths: ['Dockerfile', 'start.sh', '.github/workflows/image.yml']
   workflow_dispatch:
 
+# Supersede an older build of the same ref instead of running them side by side.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
