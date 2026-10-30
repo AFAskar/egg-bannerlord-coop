@@ -1,5 +1,5 @@
 {
-    "_comment": "Bannerlord Coop dedicated server. The image ships no game files: on boot it reads a release manifest.json from the Bannerlord Coop GitHub releases, verifies the Windows dedicated server archive against its SHA-256 and extracts it into the server volume. No Steam account or Steam Guard prompt is needed. Allocate two consecutive UDP ports: clients join on the primary and the mod also uses primary+1.",
+    "_comment": "Bannerlord Coop dedicated server. The image ships no game files: on boot it reads a release manifest.json from the Bannerlord Coop GitHub releases, verifies the Windows dedicated server archive against its SHA-256 and extracts it into the server volume. The server itself needs no Steam account. Optional Steam Workshop mods (WORKSHOP_MODS) require an account that owns Bannerlord (app 261550); Steam refuses anonymous and non-owning accounts. Manual modules go in data/mods. Allocate two consecutive UDP ports: clients join on the primary and the mod also uses primary+1.",
     "meta": {
         "version": "PTDL_v2",
         "update_url": null
@@ -29,7 +29,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# The game files are downloaded by the container at boot, not here: the\n# dedicated server build comes from the Bannerlord Coop GitHub releases.\n# This only lays out the directories start.sh expects.\nmkdir -p /mnt/server/game /mnt/server/data/mods\necho \"Directories ready.\"\necho \"On first start the server downloads the Windows dedicated server build\"\necho \"(about 4.2 GB) from the Bannerlord Coop GitHub releases. No Steam account\"\necho \"is needed.\"\n",
+            "script": "#!/bin/bash\n# The game files are downloaded by the container at boot, not here: the\n# dedicated server build comes from the Bannerlord Coop GitHub releases.\n# This only lays out the directories start.sh expects.\nmkdir -p /mnt/server/game /mnt/server/data/mods\necho \"Directories ready.\"\necho \"On first start the server downloads the Windows dedicated server build\"\necho \"(about 4.2 GB) from the Bannerlord Coop GitHub releases. No Steam account\"\necho \"is needed for the server itself.\"\necho \"Extra modules can be placed in data/mods without an account. Optional\"\necho \"Workshop mods need a Steam account that owns Bannerlord.\"\n",
             "container": "ghcr.io/parkervcp/installers:debian",
             "entrypoint": "bash"
         }
@@ -47,12 +47,42 @@
         },
         {
             "name": "Auto update",
-            "description": "Check the Bannerlord Coop GitHub releases for a newer dedicated server build on every start. 0 skips GitHub and uses the files already present.",
+            "description": "Check the Bannerlord Coop GitHub releases for a newer dedicated server build on every start. 0 skips GitHub and Workshop updates and uses the files already present.",
             "env_variable": "AUTO_UPDATE",
             "default_value": "1",
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Workshop mods",
+            "description": "Optional Steam Workshop item IDs to download and load beside the manual modules, comma separated. Requires Steam username below. Steam refuses Bannerlord Workshop downloads for anonymous accounts and for accounts that do not own Mount & Blade II: Bannerlord (app 261550). Each mod must ship a Win64_Shipping_Server build, and every player needs the same mods at the same versions.",
+            "env_variable": "WORKSHOP_MODS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam username",
+            "description": "Only used when Workshop mods are set. A Steam account that owns Mount & Blade II: Bannerlord; Steam refuses Workshop downloads for accounts that do not own the game.",
+            "env_variable": "STEAM_USERNAME",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam password",
+            "description": "Optional. Only used when Workshop mods are set. Leave it empty to type the password in the console; the first login may also ask for a Steam Guard code. steamcmd caches a token in the server volume afterwards, so later starts are unattended.",
+            "env_variable": "STEAM_PASSWORD",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": true,
+            "rules": "nullable|string|max:128",
             "field_type": "text"
         },
         {
@@ -100,6 +130,16 @@
             "description": "Where the dedicated server release is extracted. Must persist. Internal.",
             "env_variable": "GAME_DIR",
             "default_value": "/home/container/game",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam directory",
+            "description": "Holds steamcmd and downloaded Workshop mods when Workshop mods are set. Must persist. Internal.",
+            "env_variable": "STEAM_DIR",
+            "default_value": "/home/container/.steamcmd",
             "user_viewable": false,
             "user_editable": false,
             "rules": "required|string|max:128",

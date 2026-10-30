@@ -6,7 +6,10 @@ services:
       # The panel sends this, compose has to.
       STARTUP: /usr/local/bin/start.sh
       COOP_VERSION: ${COOP_VERSION:-latest}  # "latest" or a tag such as v0.1.6
-      AUTO_UPDATE: ${AUTO_UPDATE:-1}  # 0 = never contact GitHub, use what is there
+      AUTO_UPDATE: ${AUTO_UPDATE:-1}  # 0 = never contact GitHub or Workshop
+      WORKSHOP_MODS: ${WORKSHOP_MODS:-}  # optional, needs an account owning Bannerlord
+      STEAM_USERNAME: ${STEAM_USERNAME:-}
+      STEAM_PASSWORD: ${STEAM_PASSWORD:-}
       SAVE_NAME: ${SAVE_NAME:-saveauto1}
       SERVER_PASSWORD: ${SERVER_PASSWORD:-}
       AUTOSAVE_MINUTES: ${AUTOSAVE_MINUTES:-5}
