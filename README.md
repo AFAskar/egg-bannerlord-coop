@@ -58,29 +58,36 @@ host ports, change the left side of both `ports:` entries.
 | `STEAM_USERNAME` | | Account that owns Bannerlord. Required. |
 | `STEAM_PASSWORD` | | Optional. Prompted in the console if empty, which keeps it out of the panel database. |
 | `AUTO_UPDATE` | `1` | Check Steam for a newer mod build on every start. `0` boots what is already there. |
-| `WORKSHOP_MODS` | | Extra workshop item ids to load, `X,Y,Z`. See [Mods](#mods). |
 | `SAVE_NAME` | `saveauto1` | World to host. A missing save is created from `default_new_game.sav`. |
 | `SERVER_PASSWORD` | | Password players are prompted for. Empty means open. |
 | `AUTOSAVE_MINUTES` | `5` | Minutes between autosaves. `0` disables them. |
 
-`DATA_DIR`, `STEAM_DIR` and `WINEPREFIX` are internal and stay hidden in the
-panel. `ENGINE_PORT` (`7210`) and `REGION` (`EU`) set the engine's internal
-custom-server arguments and are not the port players join on.
+`DATA_DIR`, `MODS_DIR`, `STEAM_DIR` and `WINEPREFIX` are internal and stay
+hidden in the panel. `MODS_DIR` defaults to `data/mods`. `ENGINE_PORT` (`7210`)
+and `REGION` (`EU`) set the engine's internal custom-server arguments and are
+not the port players join on.
 
 ## Mods
 
-`WORKSHOP_MODS=3010984416,3794802607` downloads those workshop items alongside
-the Coop mod and loads them. steamcmd fetches each one, `start.sh` links it into
-the server's `engine/Modules` under the id its `SubModule.xml` declares, and the
-module list handed to the engine becomes:
+Extra modules are no longer downloaded from Steam Workshop. Put each module
+folder in `data/mods` (the panel's file manager can upload it; in the compose
+layout that is `server-data/mods`), then restart. The folder must be the one that
+contains `SubModule.xml`; some archives nest it one level down, which `start.sh`
+also finds.
+
+Each module is linked into the server's `engine/Modules` under the id its
+`SubModule.xml` declares, and the module list handed to the engine becomes:
 
 ```
-_MODULES_*Native*SandBoxCore*Sandbox*CoopNightly*<your mods>*DedicatedServer.Windows*_MODULES_
+_MODULES_*Native*SandBoxCore*Sandbox*Coop*<your mods>*DedicatedServer.Windows*_MODULES_
 ```
 
-Mods load after the Coop module, in the order listed, which is what the
-coop-aware ones expect: they name `CoopNightly` as a dependency. Dropping an id
-unlinks that module on the next start.
+The Coop id is read from the Coop module, so it is `Coop` on stable builds
+and `CoopNightly` on nightlies. Modules load after Coop, in folder-name order,
+which is what the coop-aware ones expect: they name the Coop module as a
+dependency. Prefix folders (`10-Foo`, `20-Bar`) when order matters. Removing a
+folder unlinks that module on the next start. Because `data/mods` is in the data
+directory, modules survive a game update.
 
 Three rules decide whether a mod works here:
 
@@ -94,6 +101,9 @@ Three rules decide whether a mod works here:
 - **Every player needs the identical set, at identical versions.** The server
   compares module lists on join and refuses a client that has one the server
   lacks, or the other way round.
+
+Use a mod release built for the same game version as the dedicated server
+package; an older server build is refused or crashes.
 
 ## Ports
 
@@ -126,6 +136,7 @@ Everything persistent lives in the server volume:
 | `data/logs` | `Coop_server.log`, written by the mod. Console output also goes to the panel. |
 | `data/server-config.json` | Port, save name, password, autosave. Re-applied from the panel on every start. |
 | `data/mod-config.json` | Mod settings, written by the mod on first boot. |
+| `data/mods` | Extra modules, linked into `engine/Modules` on every start. |
 
 ## Troubleshooting
 
@@ -133,10 +144,10 @@ Everything persistent lives in the server volume:
 | --- | --- |
 | `SERVER_PORT=0 is not in 1-65534` | The server has no primary allocation. Give it two consecutive free UDP ports. |
 | `server-config.json port=0 is not a port in 1-65534` | The stored config holds `"port": 0`. Assign a primary allocation, the next start rewrites it. |
-| `workshop item N has no SubModule.xml` | The id is not a Bannerlord module, or steamcmd could not fetch it. Check the id and the console for steamcmd errors. |
+| `module folder X has no SubModule.xml` | `data/mods/X` is not a module root. Put the folder that contains `SubModule.xml` there. |
 | A mod is listed on boot but does nothing | It ships no `bin/Win64_Shipping_Server`, so none of its code loads. See [Mods](#mods). |
-| `Cannot load: GameInterface.dll` | A mod is supplying its own Harmony or MonoMod. Remove it from `WORKSHOP_MODS`. |
-| Players are refused with `Server does not support module 'X'` | Their module list differs from the server's. Line up `WORKSHOP_MODS` with what they have. |
+| `Cannot load: GameInterface.dll` | A mod is supplying its own Harmony or MonoMod. Remove it from `data/mods`. |
+| Players are refused with `Server does not support module 'X'` | Their module list differs from the server's. Line up `data/mods` with what they have. |
 | Typed commands do nothing | The container has no tty. wings always allocates one, compose needs `tty: true`. |
 | Steam Guard on every start | The cached token is not persisting. `STEAM_DIR` must be on the server volume, and the volume must survive a restart. |
 | `no game files found and Steam could not be used` | Steam is unreachable and the volume is empty. Set `STEAM_USERNAME`, or point `GAME_DIR` at an existing copy with `AUTO_UPDATE=0`. |

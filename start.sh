@@ -9,10 +9,10 @@ STEAM_DIR=${STEAM_DIR:-/home/container/.steamcmd}
 # Run straight out of the steamcmd download; left empty, the path is discovered below.
 GAME_DIR=${GAME_DIR:-}
 DATA_DIR=${DATA_DIR:-/home/container/data}
+# Modules in this folder are linked into engine/Modules and loaded after Coop.
+MODS_DIR=${MODS_DIR:-$DATA_DIR/mods}
 WINEPREFIX=${WINEPREFIX:-/home/container/.wine}
 AUTO_UPDATE=${AUTO_UPDATE:-1}
-# Extra workshop item ids to load beside Coop, "X,Y,Z" or space separated.
-WORKSHOP_MODS=${WORKSHOP_MODS:-}
 # The engine's own custom-server port and region. Not the port players join on.
 ENGINE_PORT=${ENGINE_PORT:-7210}
 REGION=${REGION:-EU}
@@ -45,43 +45,39 @@ server has no primary allocation: give it two consecutive free UDP ports."
 
 # --- extra modules ----------------------------------------------------------
 # The engine activates only what its _MODULES_ argument names, so a mod has to be
-# downloaded, linked into Modules, and added to the list built in section 5. It
-# also needs bin/Win64_Shipping_Server; a client-only build loads no code.
-
-mod_ids() { printf '%s' "$WORKSHOP_MODS" | tr ',' ' '; }
-
-# The ids end up on a command line, so nothing but digits gets through.
-check_mod_ids() {
-  for id in $(mod_ids); do
-    awk -v i="$id" 'BEGIN{exit !(i ~ /^[0-9]+$/)}' ||
-      die "WORKSHOP_MODS contains \"$id\", which is not a workshop item id (digits only)."
-  done
-}
+# linked into Modules and added to the list built in section 5. Modules live in
+# MODS_DIR (data/mods by default), one folder per module, so a game update does
+# not delete them. A mod also needs bin/Win64_Shipping_Server; a client-only
+# build loads no code.
 
 # The declared id, not the folder name: Coop's folder declares "Coop" or "CoopNightly".
 module_id() { sed -n 's/.*<Id[[:space:]]*value="\([^"]*\)".*/\1/p' "$1" | head -1; }
 
-# stage_mods <workshop root> <modules dir> - prints the ids it staged, in order.
+# stage_mods <mods root> <modules dir> - prints the ids it staged, in folder order.
 stage_mods() {
   ws=$1; dir=$2; staged=
-  for id in $(mod_ids); do
-    sub=$ws/$id/SubModule.xml
+  [ -d "$ws" ] || return 0
+  for src in "$ws"/*; do
+    [ -d "$src" ] || continue
+    sub=$src/SubModule.xml
     # Some uploads nest the module one level down.
-    [ -f "$sub" ] || sub=$(find "$ws/$id" -maxdepth 2 -name SubModule.xml 2>/dev/null | head -1)
+    [ -f "$sub" ] || sub=$(find "$src" -maxdepth 2 -name SubModule.xml 2>/dev/null | head -1)
     if [ -z "$sub" ] || [ ! -f "$sub" ]; then
-      warn "workshop item $id has no SubModule.xml - not loaded"
+      warn "module folder $(basename "$src") has no SubModule.xml - not loaded"
       continue
     fi
     mid=$(module_id "$sub")
     if [ -z "$mid" ]; then
-      warn "workshop item $id declares no module Id - not loaded"
+      warn "module folder $(basename "$src") declares no module Id - not loaded"
       continue
     fi
     link=$dir/$mid
     # Only ever replace a link of our own, never one of the shipped modules.
     if [ -e "$link" ] && [ ! -L "$link" ]; then
       warn "$mid is a real folder under Modules, leaving it as it is"
-    elif ! ln -sfn "$(dirname "$sub")" "$link"; then
+      continue
+    fi
+    if ! ln -sfn "$(dirname "$sub")" "$link"; then
       warn "could not link $mid into Modules"
       continue
     fi
@@ -90,7 +86,7 @@ stage_mods() {
   printf '%s' "${staged# }"
 }
 
-# prune_mods <modules dir> <ids to keep> - drops what WORKSHOP_MODS no longer names,
+# prune_mods <modules dir> <ids to keep> - drops modules no longer in MODS_DIR,
 # by removing only our own links.
 prune_mods() {
   for link in "$1"/*; do
@@ -115,26 +111,19 @@ if [ "${1:-}" = "--self-test" ]; then
   done
   check_port 4200 || die "self-test: check_port rejected 4200"
 
-  for bad in abc 1x -1 12a; do
-    WORKSHOP_MODS=$bad
-    ( check_mod_ids ) 2>/dev/null && die "self-test: check_mod_ids took [$bad]"
-  done
-
   # A nested module stages under its declared id, and unstages when dropped.
   ws=$(mktemp -d) || exit 1
   md=$(mktemp -d) || exit 1
   mkdir -p "$ws/123/Inner"
   printf '<Module>\n  <Id value="TestMod" />\n</Module>\n' > "$ws/123/Inner/SubModule.xml"
   : > "$md/RealModule"
-  WORKSHOP_MODS=123
   got=$(stage_mods "$ws" "$md")
   [ "$got" = TestMod ] || die "self-test: stage_mods got [$got] want [TestMod]"
   [ -f "$md/TestMod/SubModule.xml" ] || die "self-test: TestMod did not stage"
   # MSYS ln -s copies, so assert prune_mods only where symlinks are real. CI is.
   if ln -s . "$md/.probe" 2>/dev/null && [ -L "$md/.probe" ]; then
     rm -f "$md/.probe"
-    WORKSHOP_MODS=
-    prune_mods "$md" "$(stage_mods "$ws" "$md")"
+    prune_mods "$md" ""
     [ -L "$md/TestMod" ] && die "self-test: prune_mods kept a dropped mod"
     [ -e "$md/RealModule" ] || die "self-test: prune_mods removed a real module"
   else
@@ -146,7 +135,6 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 [ -z "${SERVER_PORT:-}" ] || check_port "$SERVER_PORT"
-check_mod_ids
 
 # --- 1. game files ----------------------------------------------------------
 # steamcmd puts content under $HOME/Steam, so HOME points at STEAM_DIR; roots vary, hence the list.
@@ -163,16 +151,9 @@ resolve_game_dir() {
   return 1
 }
 
-mod_download_args() {
-  for id in $(mod_ids); do
-    printf ' +workshop_download_item %s %s' "$APP_ID" "$id"
-  done
-}
-
 run_steamcmd() {
-  # shellcheck disable=SC2046  # the ids are digits, checked by check_mod_ids
   HOME=$STEAM_DIR "$STEAM_DIR/steamcmd.sh" "$@" \
-      +workshop_download_item "$APP_ID" "$ITEM_ID" $(mod_download_args) +quit
+      +workshop_download_item "$APP_ID" "$ITEM_ID" +quit
 }
 
 update_game() {
@@ -193,7 +174,6 @@ update_game() {
   fi
 
   log "steamcmd: checking workshop item $ITEM_ID for updates"
-  [ -z "$WORKSHOP_MODS" ] || log "steamcmd: also fetching mods $WORKSHOP_MODS"
   # Cached token first: passing the password re-authenticates and pushes Guard every boot.
   # NoPromptForPassword makes that attempt fail fast instead of waiting at a password prompt.
   if [ -f "$STEAM_DIR/Steam/config/config.vdf" ]; then
@@ -221,14 +201,13 @@ resolve_game_dir || die "BannerlordCoopServer.exe is missing after the update st
 log "game files: $GAME_DIR"
 
 ensure_dir "$DATA_DIR"
+ensure_dir "$MODS_DIR"
 
 # --- 1b. link the extra modules in ------------------------------------------
 MODULES_DIR=$GAME_DIR/engine/Modules
 [ -d "$MODULES_DIR" ] || die "no engine module folder at $MODULES_DIR"
-# .../workshop/content/$APP_ID, two levels above the DedicatedServer folder.
-WS_ROOT=$(dirname "$(dirname "$GAME_DIR")")
 
-MODS=$(stage_mods "$WS_ROOT" "$MODULES_DIR")
+MODS=$(stage_mods "$MODS_DIR" "$MODULES_DIR")
 prune_mods "$MODULES_DIR" "$MODS"
 [ -z "$MODS" ] || log "extra modules: $MODS"
 
