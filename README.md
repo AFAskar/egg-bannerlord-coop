@@ -3,8 +3,11 @@
 Pelican egg and Docker image for a **Mount & Blade II: Bannerlord** co-op
 campaign server, running the Windows dedicated build under Wine.
 
-No game files are baked in. steamcmd downloads workshop item `3770450698` into
-the server volume on boot, so every operator fetches their own entitled copy.
+No game files are baked in. On boot the container reads the release
+[`manifest.json`](https://github.com/Bannerlord-Coop-Team/BannerlordCoop/releases/latest/download/manifest.json)
+from the [Bannerlord Coop GitHub releases](https://github.com/Bannerlord-Coop-Team/BannerlordCoop/releases),
+verifies the Windows dedicated server archive against its SHA-256 and extracts
+it into the server volume. No Steam account or Steam Guard prompt is involved.
 
 ## What is in here
 
@@ -12,7 +15,7 @@ the server volume on boot, so every operator fetches their own entitled copy.
 | --- | --- |
 | [`egg-bannerlord-coop.json`](egg-bannerlord-coop.json) | The egg. Import this in the panel. |
 | [`Dockerfile`](Dockerfile) | The yolk, built on the official Pelican wine yolk. |
-| [`start.sh`](start.sh) | Boot script: steamcmd, Wine prefix, server config, launch. |
+| [`start.sh`](start.sh) | Boot script: release download, modules, Wine prefix, server config, launch. |
 | [`compose.yaml`](compose.yaml) | Runs the same image with no panel. |
 
 Published image `ghcr.io/geofmigliacci/bannerlord-coop:latest`, also tagged per
@@ -20,33 +23,33 @@ commit sha. amd64 only.
 
 ## Requirements
 
-- A Steam account that owns Bannerlord (app `261550`). Paid apps refuse
-  anonymous workshop downloads, so there is no credential-free path.
+- No Steam account is needed on the server. The Coop team publishes the Windows
+  dedicated server package on GitHub releases. Players still need their own
+  Bannerlord install to join.
 - Two consecutive UDP allocations. Clients join on the first, the mod also uses
   the second.
-- About 9 GB of disk: ~6 GB of game files plus a 1.6 GB Wine prefix, both built
-  on first boot.
+- Disk: about 12 GB free on first boot (the ~4.2 GB archive, its extracted
+  files, and a 1.6 GB Wine prefix). Allow up to ~14 GB during an update, when
+  the old and new game directories coexist.
 
 ## Install on Pelican
 
 1. Admin, Eggs, Import Egg: upload `egg-bannerlord-coop.json`.
 2. Create a server on it with two consecutive UDP allocations.
-3. Set **Steam username**. Leave **Steam password** empty.
-4. Start it and watch the console. steamcmd asks for the password, then Steam
-   Guard. A mobile authenticator is a push to approve, email codes are typed in.
-5. The first start downloads about 6 GB. steamcmd then caches a token for
-   months, so later starts are unattended.
+3. Leave **Coop release** at `latest`, or pin a tag such as `v0.1.6`.
+4. Start it. The first start downloads about 4.2 GB from the GitHub release and
+   creates the Wine prefix.
+5. Later starts read the release manifest and only download when the SHA-256
+   changes. Set **Auto update** to `0` to skip GitHub entirely.
 
 ## Run without a panel
 
 ```sh
-cp .env.example .env   # fill in STEAM_USERNAME
-docker compose up      # approve the Steam Guard push on your phone
+cp .env.example .env   # optionally pin COOP_VERSION
+docker compose up
 ```
 
-`.env` is all you need, compose loads it and wires every variable. With an empty
-`STEAM_PASSWORD` the first run needs `docker compose run --rm coop`, so the
-prompt reaches your terminal.
+`.env` is all you need, compose loads it and wires every variable.
 
 `compose.yaml` also sets `STARTUP`, which a panel would send itself. For other
 host ports, change the left side of both `ports:` entries.
@@ -55,17 +58,16 @@ host ports, change the left side of both `ports:` entries.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `STEAM_USERNAME` | | Account that owns Bannerlord. Required. |
-| `STEAM_PASSWORD` | | Optional. Prompted in the console if empty, which keeps it out of the panel database. |
-| `AUTO_UPDATE` | `1` | Check Steam for a newer mod build on every start. `0` boots what is already there. |
+| `COOP_VERSION` | `latest` | GitHub release tag to install, for example `v0.1.6`. `latest` follows the newest stable release. |
+| `AUTO_UPDATE` | `1` | Check GitHub for a newer dedicated server build on every start. `0` boots what is already there. |
 | `SAVE_NAME` | `saveauto1` | World to host. A missing save is created from `default_new_game.sav`. |
 | `SERVER_PASSWORD` | | Password players are prompted for. Empty means open. |
 | `AUTOSAVE_MINUTES` | `5` | Minutes between autosaves. `0` disables them. |
 
-`DATA_DIR`, `MODS_DIR`, `STEAM_DIR` and `WINEPREFIX` are internal and stay
-hidden in the panel. `MODS_DIR` defaults to `data/mods`. `ENGINE_PORT` (`7210`)
-and `REGION` (`EU`) set the engine's internal custom-server arguments and are
-not the port players join on.
+`DATA_DIR`, `GAME_DIR`, `MODS_DIR` and `WINEPREFIX` are internal and stay hidden
+in the panel. `MODS_DIR` defaults to `data/mods`. `ENGINE_PORT` (`7210`) and
+`REGION` (`EU`) set the engine's internal custom-server arguments and are not the
+port players join on.
 
 ## Mods
 
@@ -82,7 +84,7 @@ Each module is linked into the server's `engine/Modules` under the id its
 _MODULES_*Native*SandBoxCore*Sandbox*Coop*<your mods>*DedicatedServer.Windows*_MODULES_
 ```
 
-The Coop id is read from the Coop module, so it is `Coop` on stable builds
+The Coop id is read from the release package, so it is `Coop` on stable builds
 and `CoopNightly` on nightlies. Modules load after Coop, in folder-name order,
 which is what the coop-aware ones expect: they name the Coop module as a
 dependency. Prefix folders (`10-Foo`, `20-Bar`) when order matters. Removing a
@@ -137,37 +139,44 @@ Everything persistent lives in the server volume:
 | `data/server-config.json` | Port, save name, password, autosave. Re-applied from the panel on every start. |
 | `data/mod-config.json` | Mod settings, written by the mod on first boot. |
 | `data/mods` | Extra modules, linked into `engine/Modules` on every start. |
+| `game` | The extracted dedicated server release. Replaced on update. |
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `SERVER_PORT=0 is not in 1-65534` | The server has no primary allocation. Give it two consecutive free UDP ports. |
-| `server-config.json port=0 is not a port in 1-65534` | The stored config holds `"port": 0`. Assign a primary allocation, the next start rewrites it. |
+| `could not fetch the release manifest from ...` | GitHub is unreachable, or `COOP_VERSION` names a release without `manifest.json`. Use `latest` or `v0.1.6` or newer, and check the container's network. |
+| `SHA-256 mismatch for ...` | The download was truncated or corrupted. It is deleted; the next start downloads it again. Check free disk space and the network. |
+| `7z is not installed - rebuild the image` | The image predates the GitHub-release downloader. Pull `:latest` or rebuild. |
+| `no game files found and the GitHub release could not be installed` | First boot could not download. Check `COOP_VERSION`, the network and free disk, or point `GAME_DIR` at an existing copy with `AUTO_UPDATE=0`. |
 | `module folder X has no SubModule.xml` | `data/mods/X` is not a module root. Put the folder that contains `SubModule.xml` there. |
 | A mod is listed on boot but does nothing | It ships no `bin/Win64_Shipping_Server`, so none of its code loads. See [Mods](#mods). |
 | `Cannot load: GameInterface.dll` | A mod is supplying its own Harmony or MonoMod. Remove it from `data/mods`. |
 | Players are refused with `Server does not support module 'X'` | Their module list differs from the server's. Line up `data/mods` with what they have. |
 | Typed commands do nothing | The container has no tty. wings always allocates one, compose needs `tty: true`. |
-| Steam Guard on every start | The cached token is not persisting. `STEAM_DIR` must be on the server volume, and the volume must survive a restart. |
-| `no game files found and Steam could not be used` | Steam is unreachable and the volume is empty. Set `STEAM_USERNAME`, or point `GAME_DIR` at an existing copy with `AUTO_UPDATE=0`. |
+| `SERVER_PORT=0 is not in 1-65534` | The server has no primary allocation. Give it two consecutive free UDP ports. |
+| `server-config.json port=0 is not a port in 1-65534` | The stored config holds `"port": 0`. Assign a primary allocation, the next start rewrites it. |
 
 ## How it boots
 
 ```
 tini -g --                          from the yolk: reaps orphans, signals the group
 /entrypoint.sh                      from the yolk: Xvfb on :0, stty 250, evals $STARTUP
-/usr/local/bin/start.sh             steamcmd, modules, Wine prefix, server-config.json
+/usr/local/bin/start.sh             GitHub release, modules, Wine prefix, server-config.json
 exec wine engine/dotnet/dotnet.exe TaleWorlds.Starter.DotNetCore.dll \
           "_MODULES_*...*_MODULES_" /dedicatedcustomserver 7210 EU 0
 ```
+
+`start.sh` reads `manifest.json` from the release, downloads the archive it
+names, checks the SHA-256, extracts it to a staging directory and swaps it in.
+A failed download or extraction leaves the previous game files in place.
 
 The image adds no `ENTRYPOINT` and no `CMD`, it keeps the yolk's. wings passes
 the panel's Startup Command as `$STARTUP` and the yolk entrypoint is what
 evaluates it, so that panel field stays live. `exec` keeps the game one hop from
 wings' stdin, which is how console commands reach it.
 
-`BannerlordCoopServer.exe` is shipped with the workshop item but not used: it
+`BannerlordCoopServer.exe` is shipped in the release archive but not used: it
 hardcodes its module list to the five it ships with, so extra mods can only be
 loaded by starting the engine the same way it does. What it also did, `start.sh`
 now does: seeding `server-config.json`, checking the port, and creating the

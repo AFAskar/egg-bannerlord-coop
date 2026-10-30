@@ -6,6 +6,12 @@ LABEL org.opencontainers.image.source=https://github.com/geofmigliacci/egg-banne
 # The yolk sets WINEPREFIX, WINEDEBUG, WINEDLLOVERRIDES, DISPLAY and XVFB already.
 ENV WINEARCH=win64 LANG=C.UTF-8
 
+# start.sh downloads a .7z from the GitHub release and reads its JSON manifest.
+# Debian 13 names the 7-Zip package "7zip" (p7zip-full is transitional).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends 7zip jq \
+ && rm -rf /var/lib/apt/lists/*
+
 # Smoke test in a throwaway prefix: the real one is per-server in the volume.
 # Do NOT use `wineserver -w` here, it never returns under xvfb-run and hangs the build.
 RUN export WINEPREFIX=/tmp/winecheck; xvfb-run -a wineboot -i && wineserver -k; \

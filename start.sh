@@ -1,13 +1,14 @@
 #!/bin/sh
-# Bannerlord Coop dedicated server launcher. steamcmd fetches the game at boot, none is baked in.
+# Bannerlord Coop dedicated server launcher. The Windows dedicated server build
+# comes from the Bannerlord Coop GitHub releases at boot; no Steam account is
+# needed and no game files are baked in.
 set -u
 
-APP_ID=261550
-ITEM_ID=3770450698
+COOP_REPO=Bannerlord-Coop-Team/BannerlordCoop
+# "latest" follows the newest stable release. A tag such as v0.1.6 pins one.
+COOP_VERSION=${COOP_VERSION:-latest}
 
-STEAM_DIR=${STEAM_DIR:-/home/container/.steamcmd}
-# Run straight out of the steamcmd download; left empty, the path is discovered below.
-GAME_DIR=${GAME_DIR:-}
+GAME_DIR=${GAME_DIR:-/home/container/game}
 DATA_DIR=${DATA_DIR:-/home/container/data}
 # Modules in this folder are linked into engine/Modules and loaded after Coop.
 MODS_DIR=${MODS_DIR:-$DATA_DIR/mods}
@@ -33,7 +34,7 @@ set_cfg() {
 }
 
 # wings sends its primary allocation here, and 0 when the server has none. A bad
-# port strands the server with no way in, so check before downloading 6 GB.
+# port strands the server with no way in, so check before downloading the release.
 check_port() {
   # 1-65534, since the mod also uses port+1. awk compares without overflowing on a
   # long digit string, and [1-9] first means no leading zero and no need for a
@@ -98,6 +99,16 @@ prune_mods() {
   done
 }
 
+# The release manifest is an asset on every v0.1.6+ release, so "latest" can
+# resolve it without the GitHub API and without a rate limit.
+manifest_url() {
+  case ${1:-latest} in
+    latest) printf 'https://github.com/%s/releases/latest/download/manifest.json' "$COOP_REPO" ;;
+    v*)     printf 'https://github.com/%s/releases/download/%s/manifest.json' "$COOP_REPO" "$1" ;;
+    *)      printf 'https://github.com/%s/releases/download/v%s/manifest.json' "$COOP_REPO" "$1" ;;
+  esac
+}
+
 # `sh start.sh --self-test` checks both round trips. CI runs it.
 if [ "${1:-}" = "--self-test" ]; then
   cfg=$(mktemp) || exit 1
@@ -110,6 +121,13 @@ if [ "${1:-}" = "--self-test" ]; then
     ( check_port "$bad" ) 2>/dev/null && die "self-test: check_port took [$bad]"
   done
   check_port 4200 || die "self-test: check_port rejected 4200"
+
+  [ "$(manifest_url latest)" = "https://github.com/$COOP_REPO/releases/latest/download/manifest.json" ] ||
+    die "self-test: wrong latest manifest url"
+  [ "$(manifest_url v0.1.6)" = "https://github.com/$COOP_REPO/releases/download/v0.1.6/manifest.json" ] ||
+    die "self-test: wrong pinned manifest url"
+  [ "$(manifest_url 0.1.6)" = "https://github.com/$COOP_REPO/releases/download/v0.1.6/manifest.json" ] ||
+    die "self-test: version without v did not normalize"
 
   # A nested module stages under its declared id, and unstages when dropped.
   ws=$(mktemp -d) || exit 1
@@ -137,67 +155,132 @@ fi
 [ -z "${SERVER_PORT:-}" ] || check_port "$SERVER_PORT"
 
 # --- 1. game files ----------------------------------------------------------
-# steamcmd puts content under $HOME/Steam, so HOME points at STEAM_DIR; roots vary, hence the list.
-WORKSHOP=steamapps/workshop/content/$APP_ID/$ITEM_ID/DedicatedServer
-GAME_ROOTS="$STEAM_DIR/Steam $STEAM_DIR ${HOME:-/root}/Steam"
-resolve_game_dir() {
-  [ -n "$GAME_DIR" ] && [ -f "$GAME_DIR/BannerlordCoopServer.exe" ] && return 0
-  for root in $GAME_ROOTS; do
-    if [ -f "$root/$WORKSHOP/BannerlordCoopServer.exe" ]; then
-      GAME_DIR=$root/$WORKSHOP
-      return 0
-    fi
-  done
-  return 1
+# Every release publishes manifest.json with the Windows dedicated server URL
+# and its SHA-256. The archive is the full server: engine/, the Coop module and
+# server-data/default_new_game.sav. No Steam login is involved.
+
+game_installed_at() {
+  [ -f "$1/BannerlordCoopServer.exe" ] &&
+    [ -d "$1/engine/bin/Win64_Shipping_Server" ] &&
+    [ -f "$1/engine/Modules/Coop/SubModule.xml" ]
 }
 
-run_steamcmd() {
-  HOME=$STEAM_DIR "$STEAM_DIR/steamcmd.sh" "$@" \
-      +workshop_download_item "$APP_ID" "$ITEM_ID" +quit
-}
+game_installed() { game_installed_at "$GAME_DIR"; }
 
 update_game() {
   if [ "$AUTO_UPDATE" != 1 ]; then
-    log "AUTO_UPDATE=0 - not contacting Steam"
+    log "AUTO_UPDATE=0 - not checking GitHub"
     return 1
   fi
-  if [ -z "${STEAM_USERNAME:-}" ]; then
-    log "STEAM_USERNAME unset - not contacting Steam"
+  command -v jq >/dev/null 2>&1 || { warn "jq is not installed - rebuild the image"; return 1; }
+  command -v 7z >/dev/null 2>&1 || { warn "7z is not installed - rebuild the image"; return 1; }
+
+  # Keep the manifest, partial download and staging area next to the game dir,
+  # on the same volume, so a big download never fills the container filesystem.
+  work_dir=$(dirname "$GAME_DIR")/.bannerlord-coop
+  mkdir -p "$work_dir" 2>/dev/null
+  [ -d "$work_dir" ] || { warn "cannot create $work_dir"; return 1; }
+  manifest=$work_dir/manifest.json
+  old=$work_dir/game.old
+
+  # A previous update may have left only its backup behind. Put it back before
+  # touching the network, so a failed download never loses the only copy.
+  if [ -d "$old" ] && [ ! -d "$GAME_DIR" ]; then
+    warn "restoring the game files left by a failed update"
+    mv "$old" "$GAME_DIR" || { warn "could not restore $old"; return 1; }
+  fi
+
+  url=$(manifest_url "$COOP_VERSION")
+  log "checking $COOP_VERSION release"
+  if ! curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 "$url" -o "$manifest"; then
+    warn "could not fetch the release manifest from $url"
     return 1
   fi
 
-  ensure_dir "$STEAM_DIR"
-  if [ ! -x "$STEAM_DIR/steamcmd.sh" ]; then
-    log "installing steamcmd into $STEAM_DIR"
-    wget -qO- https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz |
-      tar zx -C "$STEAM_DIR" || { warn "could not install steamcmd"; return 1; }
+  win_url=$(jq -er '.windows.url' "$manifest" 2>/dev/null) ||
+    { warn "release manifest has no windows.url"; return 1; }
+  win_sha=$(jq -er '.windows.sha256' "$manifest" 2>/dev/null) ||
+    { warn "release manifest has no windows.sha256"; return 1; }
+  win_name=$(jq -er '.windows.name' "$manifest" 2>/dev/null) ||
+    { warn "release manifest has no windows.name"; return 1; }
+  win_name=$(basename "$win_name")
+  [ -n "$win_name" ] || { warn "release manifest names an empty archive"; return 1; }
+
+  current=$(cat "$GAME_DIR/.coop-release" 2>/dev/null || true)
+  if game_installed && [ "$current" = "$win_sha" ]; then
+    log "game files are current ($win_name)"
+    return 0
   fi
 
-  log "steamcmd: checking workshop item $ITEM_ID for updates"
-  # Cached token first: passing the password re-authenticates and pushes Guard every boot.
-  # NoPromptForPassword makes that attempt fail fast instead of waiting at a password prompt.
-  if [ -f "$STEAM_DIR/Steam/config/config.vdf" ]; then
-    log "steamcmd: trying cached token"
-    run_steamcmd +@NoPromptForPassword 1 +login "$STEAM_USERNAME" && return 0
-    log "steamcmd: cached token rejected, using password"
+  archive=$work_dir/$win_name
+  if [ -f "$archive" ] &&
+     printf '%s  %s\n' "$win_sha" "$archive" | sha256sum -c - >/dev/null 2>&1; then
+    log "using verified download $archive"
+  else
+    rm -f "$archive"
+    log "downloading $win_name (~4.2 GB) from the GitHub release"
+    if ! curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$archive" "$win_url"; then
+      warn "could not download $win_name"
+      return 1
+    fi
   fi
-  # An empty password means steamcmd prompts for it, and for the Guard code, on the console.
-  # shellcheck disable=SC2086
-  run_steamcmd +login "$STEAM_USERNAME" ${STEAM_PASSWORD:+"$STEAM_PASSWORD"} ||
-    { warn "steamcmd failed"; return 1; }
+
+  actual=$(sha256sum "$archive" | awk '{print $1}') ||
+    { warn "could not hash $archive"; return 1; }
+  if [ "$actual" != "$win_sha" ]; then
+    warn "SHA-256 mismatch for $win_name: got $actual, want $win_sha"
+    rm -f "$archive"
+    return 1
+  fi
+
+  staging=$work_dir/game.new
+  rm -rf "$staging"
+  mkdir -p "$staging" 2>/dev/null
+  [ -d "$staging" ] || { warn "cannot create $staging"; return 1; }
+  log "extracting $win_name"
+  if ! 7z x -y -bso0 -bsp0 -o"$staging" "$archive"; then
+    warn "could not extract $win_name"
+    rm -rf "$staging"
+    return 1
+  fi
+  rm -f "$archive"
+  if ! game_installed_at "$staging"; then
+    warn "release archive did not contain BannerlordCoopServer.exe and engine/"
+    rm -rf "$staging"
+    return 1
+  fi
+
+  rm -rf "$old"
+  if [ -d "$GAME_DIR" ] && ! mv "$GAME_DIR" "$old"; then
+    warn "could not move $GAME_DIR aside for the update"
+    rm -rf "$staging"
+    return 1
+  fi
+  if ! mv "$staging" "$GAME_DIR"; then
+    warn "could not move the new game files into $GAME_DIR"
+    [ -d "$old" ] && mv "$old" "$GAME_DIR"
+    return 1
+  fi
+  rm -rf "$old"
+  printf '%s\n' "$win_sha" > "$GAME_DIR/.coop-release" ||
+    warn "could not write the release marker"
+  log "game files installed from $win_name"
+  return 0
 }
 
 if ! update_game; then
-  # A Steam outage or an expired credential must never brick a server that already works.
-  if ! resolve_game_dir; then
-    # Steam rate-limits repeated failed logins, so slow the wings restart loop to one a minute.
+  # A GitHub outage or a bad tag must never brick a server that already works.
+  if ! game_installed; then
+    # Slow the wings restart loop down to one attempt a minute.
     sleep 60
-    die "no game files found and Steam could not be used. Looked in:$(for r in $GAME_ROOTS; do printf '\n  %s' "$r/$WORKSHOP"; done)
-Set STEAM_USERNAME (and STEAM_PASSWORD), or point GAME_DIR at an existing copy with AUTO_UPDATE=0."
+    die "no game files found and the GitHub release could not be installed.
+Looked for BannerlordCoopServer.exe in $GAME_DIR.
+Set COOP_VERSION to a release tag that publishes manifest.json, check the
+network, or point GAME_DIR at an existing copy and set AUTO_UPDATE=0."
   fi
   warn "continuing with the game files already present"
 fi
-resolve_game_dir || die "BannerlordCoopServer.exe is missing after the update step. Looked in:$(for r in $GAME_ROOTS; do printf '\n  %s' "$r/$WORKSHOP"; done)"
+game_installed || die "BannerlordCoopServer.exe is missing from $GAME_DIR after the update step."
 log "game files: $GAME_DIR"
 
 ensure_dir "$DATA_DIR"

@@ -5,9 +5,8 @@ services:
     environment:
       # The panel sends this, compose has to.
       STARTUP: /usr/local/bin/start.sh
-      STEAM_USERNAME: ${STEAM_USERNAME:-}
-      STEAM_PASSWORD: ${STEAM_PASSWORD:-}
-      AUTO_UPDATE: ${AUTO_UPDATE:-1}  # 0 = never contact Steam, use what is there
+      COOP_VERSION: ${COOP_VERSION:-latest}  # "latest" or a tag such as v0.1.6
+      AUTO_UPDATE: ${AUTO_UPDATE:-1}  # 0 = never contact GitHub, use what is there
       SAVE_NAME: ${SAVE_NAME:-saveauto1}
       SERVER_PASSWORD: ${SERVER_PASSWORD:-}
       AUTOSAVE_MINUTES: ${AUTOSAVE_MINUTES:-5}
