@@ -338,7 +338,9 @@ update_game() {
   else
     rm -f "$archive"
     log "downloading $win_name (~4.2 GB) from the GitHub release"
-    if ! curl -fsSL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$archive" "$win_url"; then
+    # --progress-bar writes to stderr and keeps stdout for the panel log.
+    if ! curl -fL --progress-bar --retry 3 --retry-delay 5 --connect-timeout 20 \
+         -o "$archive" "$win_url"; then
       warn "could not download $win_name"
       return 1
     fi
@@ -357,7 +359,8 @@ update_game() {
   mkdir -p "$staging" 2>/dev/null
   [ -d "$staging" ] || { warn "cannot create $staging"; return 1; }
   log "extracting $win_name"
-  if ! 7z x -y -bso0 -bsp0 -o"$staging" "$archive"; then
+  # Keep the file list quiet, but send extraction progress to stderr.
+  if ! 7z x -y -bso0 -bsp2 -o"$staging" "$archive"; then
     warn "could not extract $win_name"
     rm -rf "$staging"
     return 1
